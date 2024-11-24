@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use panic_semihosting as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
 use cortex_m_rt::entry;
+use panic_semihosting as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
 use stm32l4::stm32l4x2::Peripherals as DevicePeripherals;
 
 #[entry]
@@ -11,10 +11,13 @@ fn main() -> ! {
 
     let dp = DevicePeripherals::take().unwrap();
 
+    // Chapter 6 - Reset and clock control (RCC)
     dp.RCC.ahb2enr().write(|w| w.gpioaen().set_bit());
 
     // Chapter 8
-    dp.GPIOA.moder().write(|w| w.moder0().input().moder9().output());
+    dp.GPIOA
+        .moder()
+        .write(|w| w.moder0().input().moder9().output());
     dp.GPIOA.otyper().write(|w| w.ot9().push_pull());
     dp.GPIOA.ospeedr().write(|w| w.ospeedr9().low_speed());
     dp.GPIOA.pupdr().write(|w| w.pupdr0().pull_down());
