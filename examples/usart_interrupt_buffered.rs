@@ -12,7 +12,9 @@ static mut BUFFER: Option<Queue<u16, 8>> = None;
 
 #[interrupt]
 fn USART2() {
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
+    #[allow(static_mut_refs)]
     let buffer = unsafe { BUFFER.as_mut() }.unwrap();
 
     if dp.USART2.isr().read().rxne().bit_is_set() {

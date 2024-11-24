@@ -44,6 +44,7 @@ fn send_payload(buffer_ptr: u32, dp: &mut DevicePeripherals) {
 
 #[interrupt]
 fn DMA1_CH6() {
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.DMA1.isr().read().htif6().bit_is_set() {
@@ -65,6 +66,7 @@ fn DMA1_CH6() {
 
 #[interrupt]
 fn DMA1_CH4() {
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.DMA1.isr().read().tcif4().bit_is_set() {
@@ -111,6 +113,7 @@ fn main() -> ! {
         .ch6()
         .par()
         .write(|w| unsafe { w.pa().bits(USART2_RDR) });
+    #[allow(static_mut_refs)]
     dp.DMA1
         .ch6()
         .mar()

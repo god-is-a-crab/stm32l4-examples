@@ -10,6 +10,7 @@ static mut DEVICE_PERIPHERALS: Option<DevicePeripherals> = None;
 
 #[interrupt]
 fn EXTI1() {
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.EXTI.pr1().read().pr1().bit_is_set() {

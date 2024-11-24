@@ -13,7 +13,9 @@ static mut DEVICE_PERIPHERALS: Option<DevicePeripherals> = None;
 
 #[interrupt]
 fn EXTI1() {
+    #[allow(static_mut_refs)]
     let cp = unsafe { CORE_PERIPHERALS.as_mut() }.unwrap();
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.EXTI.pr1().read().pr1().bit_is_set() {
@@ -37,7 +39,7 @@ fn EXTI1() {
 
 #[interrupt]
 fn RTC_WKUP() {
-    // let cp = CORE_PERIPHERALS.get();
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.RTC.isr().read().wutf().bit_is_set() {
@@ -54,6 +56,7 @@ fn RTC_WKUP() {
 
 #[interrupt]
 fn TIM6_DACUNDER() {
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.TIM6.sr().read().uif().bit_is_set() {

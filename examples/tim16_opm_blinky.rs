@@ -10,6 +10,7 @@ static mut DEVICE_PERIPHERALS: Option<DevicePeripherals> = None;
 
 #[interrupt]
 fn TIM1_UP_TIM16() {
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.TIM16.sr().read().uif().bit_is_set() {
@@ -21,6 +22,7 @@ fn TIM1_UP_TIM16() {
 
 #[interrupt]
 fn TIM6_DACUNDER() {
+    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.TIM6.sr().read().uif().bit_is_set() {
