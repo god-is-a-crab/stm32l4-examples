@@ -16,8 +16,12 @@ fn main() -> ! {
 
     // Chapter 8
     dp.GPIOA.moder().write(|w| w.moder9().output());
-    dp.GPIOA.otyper().write(|w| w.ot9().push_pull());
+    // Only the low level is driven, high level is HI-Z
+    dp.GPIOA.otyper().write(|w| w.ot9().open_drain());
     dp.GPIOA.ospeedr().write(|w| w.ospeedr9().low_speed());
+    // External pull-up pulls A9 high when in HI-Z
+    // Connect a 10k pull resistor to the HI-Z output signal and then connect that resistor
+    // to GND/3V3 VCC
     dp.GPIOA.bsrr().write(|w| w.bs9().set_bit());
 
     loop {
