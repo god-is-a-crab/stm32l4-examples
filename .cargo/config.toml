@@ -2,4 +2,4 @@
 runner = "gdb-multiarch -q -x openocd.gdb"
 
 [build]
-target = "thumbv7em-none-eabihf"     # Cortex-M4F and Cortex-M7F (with FPU)
+target = "thumbv7m-none-eabi"        # Cortex-M3
