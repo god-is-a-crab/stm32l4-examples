@@ -4,85 +4,35 @@
 use cortex_m::{asm, Peripherals as CorePeripherals};
 use cortex_m_rt::entry;
 use heapless::spsc::Queue;
-use nrf24l01_commands::{
-    commands::{self, Command},
-    registers,
-};
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals as DevicePeripherals};
 
 const USART2_TDR: u32 = 0x4000_4428;
 const SPI1_DR: u32 = 0x4001_300C;
-const TX_ADDRESS: u64 = 0xA2891F;
 
 static mut CORE_PERIPHERALS: Option<CorePeripherals> = None;
 static mut DEVICE_PERIPHERALS: Option<DevicePeripherals> = None;
 
 // Commands
-const NOP: [u8; 1] = commands::Nop::bytes();
-const SETUP_AW: [u8; 2] = commands::WRegister(registers::SetupAw::new().with_aw(1)).bytes();
-const R_SETUP_AW: [u8; 2] = commands::RRegister::<registers::SetupAw>::bytes();
-const SETUP_RETR: [u8; 2] = commands::WRegister(registers::SetupRetr::new().with_arc(15)).bytes();
-const R_SETUP_RETR: [u8; 2] = commands::RRegister::<registers::SetupRetr>::bytes();
-const RF_CH: [u8; 2] = commands::WRegister(registers::RfCh::new().with_rf_ch(0)).bytes();
-const R_RF_CH: [u8; 2] = commands::RRegister::<registers::RfCh>::bytes();
-const RF_SETUP: [u8; 2] = commands::WRegister(registers::RfSetup::new().with_rf_dr(false)).bytes();
-const R_RF_SETUP: [u8; 2] = commands::RRegister::<registers::RfSetup>::bytes();
-const RX_ADDR_P0: [u8; 4] =
-    commands::WRegister(registers::RxAddrP0::<3>::new().with_rx_addr_p0(TX_ADDRESS)).bytes();
-const R_RX_ADDR_P0: [u8; 4] = [0x0A, 0, 0, 0];
-const TX_ADDR: [u8; 4] =
-    commands::WRegister(registers::TxAddr::<3>::new().with_tx_addr(TX_ADDRESS)).bytes();
-const R_TX_ADDR: [u8; 4] = [0x10, 0, 0, 0];
-const ACTIVATE: [u8; 2] = commands::Activate::bytes();
-const FEATURE: [u8; 2] = commands::WRegister(registers::Feature::new().with_en_dpl(true)).bytes();
-const R_FEATURE: [u8; 2] = commands::RRegister::<registers::Feature>::bytes();
-const DYNPD: [u8; 2] = commands::WRegister(registers::Dynpd::new().with_dpl_p0(true)).bytes();
-const R_DYNPD: [u8; 2] = commands::RRegister::<registers::Dynpd>::bytes();
-const POWER_UP: [u8; 2] = commands::WRegister(
-    registers::Config::new()
-        .with_pwr_up(true)
-        .with_mask_rx_dr(true),
-)
-.bytes();
-const R_CONFIG: [u8; 2] = commands::RRegister::<registers::Config>::bytes();
-const W_TX_PAYLOAD: [u8; 33] = [
-    commands::WTxPayload::<32>::WORD,
-    b't',
-    b'h',
-    b'e',
-    b' ',
-    b'l',
-    b'a',
-    b'z',
-    b'y',
-    b' ',
-    b'f',
-    b'o',
-    b'x',
-    b' ',
-    b'j',
-    b'u',
-    b'm',
-    b'p',
-    b'e',
-    b'd',
-    b' ',
-    b'o',
-    b'v',
-    b'e',
-    b'r',
-    b' ',
-    b't',
-    b'h',
-    b'e',
-    b' ',
-    b'b',
-    b'r',
-    b'o',
-];
-const RESET_INTERRUPTS: [u8; 2] =
-    commands::WRegister(registers::Status::new().with_max_rt(true).with_tx_ds(true)).bytes();
+const DIO_MAPPING: [u8; 2] = [0xc0, 0x00];
+const SLEEP_MODE: [u8; 2] = [0x81, 0x88]; // Set SLEEP and LoRA mode
+const W_OP_MODE: [u8; 2] = [0x81, 0x89]; // Set STBY mode
+const RX_MODE: [u8; 2] = [0x81, 0x8d];
+const R_OP_MODE: [u8; 2] = [0x01, 0x00];
+const R_FIFO: [u8; 39] = [0; 39];
+const R_FIFO_ADDR_PTR: [u8; 2] = [0x0D, 0x00];
+const W_FIFO_ADDR_PTR: [u8; 2] = [0b1000_0000 | 0x0D, 0x00];
+const R_FIFO_RX_CURR_ADDR: [u8; 2] = [0x10, 0];
+const R_IRQ_FLAGS: [u8; 2] = [0x12, 0x00];
+const CLEAR_RXDONE: [u8; 2] = [0x92, 0x50];
+const W_FRF_H: [u8; 2] = [0x06 | 0x80, 0x7B]; // 495 Mhz
+const W_FRF_M: [u8; 2] = [0x07 | 0x80, 0xC0];
+const W_FRF_L: [u8; 2] = [0x08 | 0x80, 0x14];
+const R_FRF_H: [u8; 2] = [0x06, 0];
+const R_FRF_M: [u8; 2] = [0x07, 0];
+const R_FRF_L: [u8; 2] = [0x08, 0];
+const R_FIFO_RX_BYTES_NB: [u8; 2] = [0x13, 0];
+const R_STATUS: [u8; 2] = [0x18, 0];
 
 static mut SPI1_RX_BUFFER: [u8; 33] = [0; 33];
 static mut COMMANDS: Queue<&[u8], 64> = Queue::new();
@@ -128,14 +78,6 @@ fn send_command(command: &[u8], dp: &mut DevicePeripherals) {
     dp.SPI1.cr1().write(|w| w.mstr().set_bit().spe().enabled());
 }
 
-#[inline]
-fn pulse_ce(dp: &mut DevicePeripherals) {
-    // Set CE high
-    dp.GPIOA.bsrr().write(|w| w.bs0().set_bit());
-    // Enable counter, one-pulse mode
-    dp.TIM6.cr1().write(|w| w.opm().enabled().cen().enabled());
-}
-
 #[interrupt]
 fn USART2() {
     #[allow(static_mut_refs)]
@@ -147,22 +89,43 @@ fn USART2() {
         match received_byte {
             97 => {
                 // a
-                // NOP
-                send_command(&NOP, dp);
+                send_command(&R_FIFO_ADDR_PTR, dp);
             }
             98 => {
                 // b
-                // Write payload
-                send_command(&W_TX_PAYLOAD, dp);
+                send_command(&W_FIFO_ADDR_PTR, dp);
             }
             99 => {
                 // c
-                pulse_ce(dp);
+                send_command(&R_FIFO, dp);
             }
             100 => {
                 // d
-                // Reset interrupts
-                send_command(&RESET_INTERRUPTS, dp);
+                send_command(&R_FIFO_RX_CURR_ADDR, dp);
+            }
+            101 => {
+                // e
+                send_command(&R_OP_MODE, dp);
+            }
+            102 => {
+                // f
+                send_command(&RX_MODE, dp);
+            }
+            103 => {
+                // g
+                send_command(&R_IRQ_FLAGS, dp);
+            }
+            104 => {
+                // h
+                send_command(&CLEAR_RXDONE, dp);
+            }
+            105 => {
+                // i
+                send_command(&R_STATUS, dp);
+            }
+            106 => {
+                // j
+                send_command(&R_FIFO_RX_BYTES_NB, dp);
             }
             _ => (),
         }
@@ -291,6 +254,8 @@ fn main() -> ! {
     dp.GPIOA.moder().write(|w| {
         w.moder0()
             .output()
+            .moder1()
+            .input()
             .moder2()
             .alternate()
             .moder3()
@@ -402,24 +367,14 @@ fn main() -> ! {
     let commands = unsafe { &mut COMMANDS };
 
     unsafe {
-        commands.enqueue_unchecked(&R_SETUP_AW);
-        commands.enqueue_unchecked(&SETUP_RETR);
-        commands.enqueue_unchecked(&R_SETUP_RETR);
-        commands.enqueue_unchecked(&RF_CH);
-        commands.enqueue_unchecked(&R_RF_CH);
-        commands.enqueue_unchecked(&RF_SETUP);
-        commands.enqueue_unchecked(&R_RF_SETUP);
-        commands.enqueue_unchecked(&RX_ADDR_P0);
-        commands.enqueue_unchecked(&R_RX_ADDR_P0);
-        commands.enqueue_unchecked(&TX_ADDR);
-        commands.enqueue_unchecked(&R_TX_ADDR);
-        commands.enqueue_unchecked(&ACTIVATE);
-        commands.enqueue_unchecked(&FEATURE);
-        commands.enqueue_unchecked(&R_FEATURE);
-        commands.enqueue_unchecked(&DYNPD);
-        commands.enqueue_unchecked(&R_DYNPD);
-        commands.enqueue_unchecked(&POWER_UP);
-        commands.enqueue_unchecked(&R_CONFIG);
+        commands.enqueue_unchecked(&SLEEP_MODE);
+        commands.enqueue_unchecked(&W_OP_MODE);
+        commands.enqueue_unchecked(&W_FRF_H);
+        commands.enqueue_unchecked(&W_FRF_M);
+        commands.enqueue_unchecked(&W_FRF_L);
+        commands.enqueue_unchecked(&R_FRF_H);
+        commands.enqueue_unchecked(&R_FRF_M);
+        commands.enqueue_unchecked(&R_FRF_L);
 
         // Unmask NVIC global interrupts
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH2);
@@ -434,7 +389,7 @@ fn main() -> ! {
     #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
-    send_command(&SETUP_AW, dp);
+    send_command(&DIO_MAPPING, dp);
 
     loop {
         asm::wfi();
