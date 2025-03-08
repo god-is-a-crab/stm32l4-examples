@@ -9,7 +9,7 @@ use nrf24l01_commands::{
     registers,
 };
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
-use stm32l4::stm32l4x2::{Interrupt, Peripherals as DevicePeripherals, interrupt};
+use stm32l4::stm32l412::{Interrupt, Peripherals as DevicePeripherals, interrupt};
 
 const USART2_TDR: u32 = 0x4000_4428;
 const SPI1_DR: u32 = 0x4001_300C;
@@ -282,7 +282,7 @@ fn main() -> ! {
     dp.RCC.ahb2enr().write(|w| w.gpioaen().set_bit());
     dp.RCC
         .apb1enr1()
-        .write(|w| w.usart2en().enabled().tim6en().set_bit());
+        .write(|w| w.usart2en().set_bit().tim6en().set_bit());
     dp.RCC.apb2enr().write(|w| w.spi1en().set_bit());
 
     // USART2: A2 (TX), A3 (RX) as AF 7

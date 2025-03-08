@@ -1,5 +1,5 @@
 source register_viewer.py
-loadsvd STM32L4x2.svd
+loadsvd STM32L412.svd
 target extended-remote :3333
 
 # print demangled symbols

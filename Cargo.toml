@@ -23,7 +23,7 @@ sx127x-commands = { path = "../sx127x-commands" }
 
 [dependencies.stm32l4]
 path = "../../stm32-rs-nightlies/stm32l4"
-features = ["stm32l4x2"]
+features = ["stm32l412"]
 
 [profile.release]
 codegen-units = 1 # better optimizations
