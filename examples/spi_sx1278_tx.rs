@@ -43,6 +43,7 @@ const R_PREAMBLE_L: [u8; 2] = [0x21, 0];
 const R_SYNC_WORD: [u8; 2] = [0x39, 0];
 const R_CONFIG1: [u8; 2] = [0x1d, 0];
 const R_CONFIG2: [u8; 2] = [0x1e, 0];
+const R_PACKET_RSSI: [u8; 2] = [0x1A, 0];
 static mut W_TX_PAYLOAD: [u8; 4] = [0b1000_0000, 0x63, 0x10, 0xC0];
 
 static mut STATE: State = State::Start;
@@ -139,6 +140,10 @@ fn USART2() {
             104 => {
                 // h
                 send_command(&CLEAR_TXDONE, dp);
+            }
+            105 => {
+                // i
+                send_command(&R_PACKET_RSSI, dp);
             }
             _ => (),
         }
