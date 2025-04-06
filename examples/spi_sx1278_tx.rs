@@ -15,22 +15,26 @@ static mut DEVICE_PERIPHERALS: Option<DevicePeripherals> = None;
 
 // Commands
 const DIO_MAPPING: [u8; 2] = [0xc0, 0x40];
+const DIO_MAPPING_RXDONE: [u8; 2] = [0xC0, 0x00];
 const SLEEP_MODE: [u8; 2] = [0x81, 0x88]; // Set SLEEP and LoRA mode
 const W_OP_MODE: [u8; 2] = [0x81, 0x89]; // Set STBY mode
 const TX_MODE: [u8; 2] = [0x81, 0x8b];
+const RX_MODE: [u8; 2] = [0x81, 0x8d]; // RX continuous mode
 const R_OP_MODE: [u8; 2] = [0x01, 0x00];
-const W_PAYLOAD_LENGTH: [u8; 2] = [0xA2, 0x26]; // Set payload length to 38
+const W_PAYLOAD_LENGTH: [u8; 2] = [0xA2, 3]; // Set payload length to 3
 const R_PAYLOAD_LENGTH: [u8; 2] = [0x22, 0];
 const R_PA_CONFIG: [u8; 2] = [0x09, 0x00];
 const W_PA_CONFIG: [u8; 2] = [0x80 | 0x09, 0xcf]; // PA output PA_BOOST
-const R_FIFO: [u8; 33] = [0; 33];
+const R_FIFO: [u8; 4] = [0; 4];
 const R_FIFO_ADDR_PTR: [u8; 2] = [0x0D, 0x00];
 const W_FIFO_ADDR_PTR: [u8; 2] = [0b1000_0000 | 0x0D, 0x80];
+const W_FIFO_ADDR_PTR_RX: [u8; 2] = [0b1000_0000 | 0x0D, 0x00];
+const W_IRQ_FLAGS_MASK: [u8; 2] = [0b1000_0000 | 0x11, 0xB7];
 const R_IRQ_FLAGS: [u8; 2] = [0x12, 0x00];
-const CLEAR_TXDONE: [u8; 2] = [0x92, 0x08];
-const W_FRF_H: [u8; 2] = [0x06 | 0x80, 0x7B];
-const W_FRF_M: [u8; 2] = [0x07 | 0x80, 0xC0];
-const W_FRF_L: [u8; 2] = [0x08 | 0x80, 0x14];
+const CLEAR_TXDONE: [u8; 2] = [0x92, 0x48];
+// const W_FRF_H: [u8; 2] = [0x06 | 0x80, 0x7B];
+// const W_FRF_M: [u8; 2] = [0x07 | 0x80, 0xC0];
+// const W_FRF_L: [u8; 2] = [0x08 | 0x80, 0x14];
 const R_FRF_H: [u8; 2] = [0x06, 0];
 const R_FRF_M: [u8; 2] = [0x07, 0];
 const R_FRF_L: [u8; 2] = [0x08, 0];
@@ -39,50 +43,17 @@ const R_PREAMBLE_L: [u8; 2] = [0x21, 0];
 const R_SYNC_WORD: [u8; 2] = [0x39, 0];
 const R_CONFIG1: [u8; 2] = [0x1d, 0];
 const R_CONFIG2: [u8; 2] = [0x1e, 0];
-const W_TX_PAYLOAD: [u8; 39] = [
-    0b1000_0000,
-    b't',
-    b'h',
-    b'e',
-    b' ',
-    b'l',
-    b'a',
-    b'z',
-    b'y',
-    b' ',
-    b'f',
-    b'o',
-    b'x',
-    b' ',
-    b'j',
-    b'u',
-    b'm',
-    b'p',
-    b'e',
-    b'd',
-    b' ',
-    b'o',
-    b'v',
-    b'e',
-    b'r',
-    b' ',
-    b't',
-    b'h',
-    b'e',
-    b' ',
-    b'b',
-    b'r',
-    b'o',
-    b'w',
-    b'n',
-    b' ',
-    b'f',
-    b'o',
-    b'x'
-];
+static mut W_TX_PAYLOAD: [u8; 4] = [0b1000_0000, 0x63, 0x10, 0xC0];
 
+static mut STATE: State = State::Start;
 static mut SPI1_RX_BUFFER: [u8; 33] = [0; 33];
 static mut COMMANDS: Queue<&[u8], 64> = Queue::new();
+
+enum State {
+    Start,
+    ReadIrq,
+    Rx,
+}
 
 #[inline]
 fn send_command(command: &[u8], dp: &mut DevicePeripherals) {
@@ -148,7 +119,10 @@ fn USART2() {
             }
             100 => {
                 // d
-                send_command(&W_TX_PAYLOAD, dp);
+                #[allow(static_mut_refs)]
+                let payload = unsafe { W_TX_PAYLOAD.as_mut() };
+                payload[3] = payload[3] + 1;
+                send_command(payload, dp);
             }
             101 => {
                 // e
@@ -178,8 +152,6 @@ fn USART2() {
 fn DMA1_CH7() {
     #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
-    #[allow(static_mut_refs)]
-    let commands = unsafe { &mut COMMANDS };
 
     if dp.DMA1.isr().read().tcif7().bit_is_set() {
         // Disable DMA Ch7
@@ -193,10 +165,6 @@ fn DMA1_CH7() {
                 .en()
                 .clear_bit()
         });
-        // Send next command
-        if let Some(command) = commands.dequeue() {
-            send_command(command, dp);
-        }
         dp.DMA1.ifcr().write(|w| w.ctcif7().set_bit());
     }
 }
@@ -206,6 +174,12 @@ fn DMA1_CH7() {
 fn DMA1_CH2() {
     #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
+    #[allow(static_mut_refs)]
+    let rx_buf = unsafe { &SPI1_RX_BUFFER };
+    #[allow(static_mut_refs)]
+    let commands = unsafe { &mut COMMANDS };
+    #[allow(static_mut_refs)]
+    let state = unsafe { &mut STATE };
 
     if dp.DMA1.isr().read().tcif2().bit_is_set() {
         // Disable DMA Ch2
@@ -219,17 +193,47 @@ fn DMA1_CH2() {
             .cr1()
             .write(|w| w.mstr().set_bit().spe().clear_bit());
 
-        // Enable USART2 TX DMA
-        dp.DMA1.ch7().cr().write(|w| {
-            w.minc()
-                .set_bit()
-                .dir()
-                .set_bit()
-                .tcie()
-                .set_bit()
-                .en()
-                .set_bit()
-        });
+        // Send next command
+        if let Some(command) = commands.dequeue() {
+            send_command(command, dp);
+        } else {
+            match *state {
+                State::ReadIrq => {
+                    let irq_flags = rx_buf[1];
+                    if irq_flags >> 3 & 1 == 1 {
+                        // tx done
+                        unsafe { commands.enqueue_unchecked(&DIO_MAPPING_RXDONE) };
+                        unsafe { commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX) };
+                        unsafe { commands.enqueue_unchecked(&RX_MODE) };
+                        send_command(&CLEAR_TXDONE, dp);
+                        *state = State::Start;
+                    } else if irq_flags >> 6 & 1 == 1 {
+                        // rx done
+                        unsafe { commands.enqueue_unchecked(&DIO_MAPPING) };
+                        unsafe { commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX) };
+                        unsafe { commands.enqueue_unchecked(&R_FIFO) };
+                        send_command(&CLEAR_TXDONE, dp);
+                        *state = State::Rx;
+                    }
+                }
+                State::Rx => {
+                    // Enable USART2 TX DMA
+                    dp.DMA1.ch7().cr().write(|w| {
+                        w.minc()
+                            .set_bit()
+                            .dir()
+                            .set_bit()
+                            .tcie()
+                            .set_bit()
+                            .en()
+                            .set_bit()
+                    });
+                    *state = State::Start;
+                }
+                _ => {}
+            }
+        }
+
         dp.DMA1.ifcr().write(|w| w.ctcif2().set_bit());
     }
 }
@@ -255,15 +259,20 @@ fn DMA1_CH3() {
     }
 }
 
-/// CE 10us pulse
 #[interrupt]
-fn TIM6_DACUNDER() {
+fn EXTI1() {
     #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
+    #[allow(static_mut_refs)]
+    let state = unsafe { &mut STATE };
 
-    if dp.TIM6.sr().read().uif().bit_is_set() {
-        dp.GPIOA.bsrr().write(|w| w.br0().set_bit());
-        dp.TIM6.sr().write(|w| w.uif().clear_bit());
+    if dp.EXTI.pr1().read().pr1().bit_is_set() {
+        // Get IRQ status
+        // TXDONE and ack required -> Set RX
+        // RXDONE -> read rx buffer
+        send_command(&R_IRQ_FLAGS, dp);
+        *state = State::ReadIrq;
+        dp.EXTI.pr1().write(|w| w.pr1().clear_bit_by_one());
     }
 }
 
@@ -333,6 +342,9 @@ fn main() -> ! {
             .afrl7()
             .af5()
     });
+
+    dp.EXTI.rtsr1().write(|w| w.tr1().set_bit());
+    dp.EXTI.imr1().write(|w| w.mr1().set_bit());
 
     // DMA channel selection
     dp.DMA1
@@ -413,11 +425,13 @@ fn main() -> ! {
         commands.enqueue_unchecked(&R_PAYLOAD_LENGTH);
         commands.enqueue_unchecked(&W_PA_CONFIG);
         commands.enqueue_unchecked(&R_PA_CONFIG);
+        commands.enqueue_unchecked(&W_IRQ_FLAGS_MASK);
         commands.enqueue_unchecked(&W_FIFO_ADDR_PTR);
+        #[allow(static_mut_refs)]
         commands.enqueue_unchecked(&W_TX_PAYLOAD);
-        commands.enqueue_unchecked(&W_FRF_H);
-        commands.enqueue_unchecked(&W_FRF_M);
-        commands.enqueue_unchecked(&W_FRF_L);
+        // commands.enqueue_unchecked(&W_FRF_H);
+        // commands.enqueue_unchecked(&W_FRF_M);
+        // commands.enqueue_unchecked(&W_FRF_L);
         commands.enqueue_unchecked(&R_FRF_H);
         commands.enqueue_unchecked(&R_FRF_M);
         commands.enqueue_unchecked(&R_FRF_L);
@@ -431,7 +445,7 @@ fn main() -> ! {
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH2);
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH3);
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH7);
-        cortex_m::peripheral::NVIC::unmask(Interrupt::TIM6_DACUNDER);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI1);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART2);
         CORE_PERIPHERALS = Some(cp);
         DEVICE_PERIPHERALS = Some(dp);
