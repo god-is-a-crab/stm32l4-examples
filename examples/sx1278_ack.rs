@@ -1,11 +1,17 @@
 #![no_std]
 #![no_main]
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 
 use cortex_m::{asm, Peripherals as CorePeripherals};
 use cortex_m_rt::entry;
 use heapless::spsc::Queue;
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals as DevicePeripherals};
+use sx127x_commands::{
+    commands::{ReadFifo, ReadSingle, WriteFifo, WriteSingle},
+    registers,
+};
 
 const USART2_TDR: u32 = 0x4000_4428;
 const SPI1_DR: u32 = 0x4001_300C;
@@ -14,28 +20,67 @@ static mut CORE_PERIPHERALS: Option<CorePeripherals> = None;
 static mut DEVICE_PERIPHERALS: Option<DevicePeripherals> = None;
 
 // Commands
-const DIO_MAPPING: [u8; 2] = [0xc0, 0x40];
-const DIO_MAPPING_RXDONE: [u8; 2] = [0xC0, 0x00];
-const SLEEP_MODE: [u8; 2] = [0x81, 0x88]; // Set SLEEP and LoRA mode
-const W_OP_MODE: [u8; 2] = [0x81, 0x89]; // Set STBY mode
-const TX_MODE: [u8; 2] = [0x81, 0x8b];
-const RX_MODE: [u8; 2] = [0x81, 0x8e]; // RX single mode
-const R_OP_MODE: [u8; 2] = [0x01, 0x00];
-const W_PAYLOAD_LENGTH: [u8; 2] = [0xA2, 3]; // Set payload length to 3
-const W_PA_CONFIG: [u8; 2] = [0x80 | 0x09, 0xcf]; // PA output PA_BOOST
-const R_FIFO: [u8; 4] = [0; 4];
-const R_FIFO_ADDR_PTR: [u8; 2] = [0x0D, 0x00];
-const W_FIFO_ADDR_PTR: [u8; 2] = [0b1000_0000 | 0x0D, 0x80];
-const W_FIFO_ADDR_PTR_RX: [u8; 2] = [0b1000_0000 | 0x0D, 0x00];
-const W_IRQ_FLAGS_MASK: [u8; 2] = [0b1000_0000 | 0x11, 0xB7];
-const R_IRQ_FLAGS: [u8; 2] = [0x12, 0x00];
-const CLEAR_TXDONE: [u8; 2] = [0x92, 0x48];
+const DIO0_TXDONE: [u8; 2] =
+    WriteSingle(registers::RegDioMapping1::new().with_dio0_mapping(0b01)).bytes();
+const DIO0_RXDONE: [u8; 2] =
+    WriteSingle(registers::RegDioMapping1::new().with_dio0_mapping(0b00)).bytes();
+const SET_LORA_MODE: [u8; 2] = WriteSingle(
+    // LoRA mode can only be set in SLEEP mode
+    registers::RegOpMode::new()
+        .with_long_range_mode(registers::LongRangeMode::Lora)
+        .with_mode(registers::Mode::Sleep),
+)
+.bytes();
+const SET_STDBY_MODE: [u8; 2] = WriteSingle(
+    registers::RegOpMode::new()
+        .with_long_range_mode(registers::LongRangeMode::Lora)
+        .with_mode(registers::Mode::Stdby),
+)
+.bytes();
+const TX_MODE: [u8; 2] = WriteSingle(
+    registers::RegOpMode::new()
+        .with_long_range_mode(registers::LongRangeMode::Lora)
+        .with_mode(registers::Mode::Tx),
+)
+.bytes();
+const RX_MODE: [u8; 2] = WriteSingle(
+    registers::RegOpMode::new()
+        .with_long_range_mode(registers::LongRangeMode::Lora)
+        .with_mode(registers::Mode::RxSingle),
+)
+.bytes();
+const W_PAYLOAD_LENGTH: [u8; 2] =
+    WriteSingle(registers::lora::RegPayloadLength::new().with_payload_length(3)).bytes();
+const W_PA_CONFIG: [u8; 2] = WriteSingle(
+    registers::RegPaConfig::new()
+        .with_pa_select(registers::PaSelect::PaBoost)
+        .with_output_power(15),
+)
+.bytes();
 // const W_FRF_H: [u8; 2] = [0x06 | 0x80, 0x7B];
 // const W_FRF_M: [u8; 2] = [0x07 | 0x80, 0xC0];
 // const W_FRF_L: [u8; 2] = [0x08 | 0x80, 0x14];
-const R_PACKET_RSSI: [u8; 2] = [0x1A, 0];
-const W_SYMB_TIMEOUT_LSB: [u8; 2] = [0b1000_0000 | 0x1F, 0x16];
-static mut W_TX_PAYLOAD: [u8; 4] = [0b1000_0000, 0x63, 0x10, 0xC0];
+const W_SYMB_TIMEOUT_LSB: [u8; 2] =
+    WriteSingle(registers::lora::RegSymbTimeoutLsb::new().with_symb_timeout(0x16)).bytes();
+const R_FIFO: [u8; 4] = ReadFifo::<3>::bytes();
+const W_FIFO_ADDR_PTR_RX: [u8; 2] =
+    WriteSingle(registers::lora::RegFifoAddrPtr::new().with_fifo_addr_ptr(0)).bytes();
+const W_FIFO_ADDR_PTR_TX: [u8; 2] =
+    WriteSingle(registers::lora::RegFifoAddrPtr::new().with_fifo_addr_ptr(0x80)).bytes();
+const W_IRQ_FLAGS_MASK: [u8; 2] = WriteSingle(
+    registers::lora::RegIrqFlagsMask::from_bits(0xFF)
+        .with_rx_done_mask(false)
+        .with_tx_done_mask(false),
+)
+.bytes();
+const R_IRQ_FLAGS: [u8; 2] = ReadSingle::<registers::lora::RegIrqFlags>::bytes();
+const CLEAR_IRQ: [u8; 2] = WriteSingle(
+    registers::lora::RegIrqFlags::new()
+        .with_rx_done(true)
+        .with_tx_done(true),
+)
+.bytes();
+static mut W_FIFO: [u8; 4] = WriteFifo([0x63, 0x10, 0xC0]).bytes();
 
 static mut STATE: State = State::Start;
 static mut SPI1_RX_BUFFER: [u8; 33] = [0; 33];
@@ -97,44 +142,24 @@ fn USART2() {
         let received_byte = dp.USART2.rdr().read().rdr().bits();
 
         match received_byte {
-            97 => {
-                // a
-                send_command(&R_FIFO_ADDR_PTR, dp);
+            113 => {
+                // q
+                send_command(&W_FIFO_ADDR_PTR_TX, dp);
             }
-            98 => {
-                // b
-                send_command(&W_FIFO_ADDR_PTR, dp);
-            }
-            99 => {
-                // c
-                send_command(&R_FIFO, dp);
-            }
-            100 => {
-                // d
+            119 => {
+                // w
                 #[allow(static_mut_refs)]
-                let payload = unsafe { W_TX_PAYLOAD.as_mut() };
+                let payload = unsafe { W_FIFO.as_mut() };
                 payload[3] = payload[3].wrapping_add(1);
                 send_command(payload, dp);
             }
             101 => {
                 // e
-                send_command(&R_OP_MODE, dp);
-            }
-            102 => {
-                // f
                 send_command(&TX_MODE, dp);
             }
-            103 => {
-                // g
-                send_command(&R_IRQ_FLAGS, dp);
-            }
-            104 => {
-                // h
-                send_command(&CLEAR_TXDONE, dp);
-            }
-            105 => {
-                // i
-                send_command(&R_PACKET_RSSI, dp);
+            114 => {
+                // r
+                send_command(&CLEAR_IRQ, dp);
             }
             _ => (),
         }
@@ -198,17 +223,17 @@ fn DMA1_CH2() {
                     let irq_flags = rx_buf[1];
                     if irq_flags >> 3 & 1 == 1 {
                         // tx done
-                        unsafe { commands.enqueue_unchecked(&DIO_MAPPING_RXDONE) };
+                        unsafe { commands.enqueue_unchecked(&DIO0_RXDONE) };
                         unsafe { commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX) };
                         unsafe { commands.enqueue_unchecked(&RX_MODE) };
-                        send_command(&CLEAR_TXDONE, dp);
+                        send_command(&CLEAR_IRQ, dp);
                         *state = State::Start;
                     } else if irq_flags >> 6 & 1 == 1 {
                         // rx done
-                        unsafe { commands.enqueue_unchecked(&DIO_MAPPING) };
+                        unsafe { commands.enqueue_unchecked(&DIO0_TXDONE) };
                         unsafe { commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX) };
                         unsafe { commands.enqueue_unchecked(&R_FIFO) };
-                        send_command(&CLEAR_TXDONE, dp);
+                        send_command(&CLEAR_IRQ, dp);
                         *state = State::Rx;
                     }
                 }
@@ -436,15 +461,15 @@ fn main() -> ! {
     let commands = unsafe { &mut COMMANDS };
 
     unsafe {
-        commands.enqueue_unchecked(&SLEEP_MODE);
-        commands.enqueue_unchecked(&W_OP_MODE);
+        commands.enqueue_unchecked(&SET_LORA_MODE);
+        commands.enqueue_unchecked(&SET_STDBY_MODE);
         commands.enqueue_unchecked(&W_PAYLOAD_LENGTH);
         commands.enqueue_unchecked(&W_PA_CONFIG);
         commands.enqueue_unchecked(&W_SYMB_TIMEOUT_LSB);
         commands.enqueue_unchecked(&W_IRQ_FLAGS_MASK);
-        commands.enqueue_unchecked(&W_FIFO_ADDR_PTR);
+        commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_TX);
         #[allow(static_mut_refs)]
-        commands.enqueue_unchecked(&W_TX_PAYLOAD);
+        commands.enqueue_unchecked(&W_FIFO);
         // commands.enqueue_unchecked(&W_FRF_H);
         // commands.enqueue_unchecked(&W_FRF_M);
         // commands.enqueue_unchecked(&W_FRF_L);
@@ -462,7 +487,7 @@ fn main() -> ! {
     #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
-    send_command(&DIO_MAPPING, dp);
+    send_command(&DIO0_TXDONE, dp);
 
     loop {
         asm::wfi();
