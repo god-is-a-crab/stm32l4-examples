@@ -78,7 +78,7 @@ const W_TX_PAYLOAD: [u8; 39] = [
     b' ',
     b'f',
     b'o',
-    b'x'
+    b'x',
 ];
 
 static mut SPI1_RX_BUFFER: [u8; 33] = [0; 33];
