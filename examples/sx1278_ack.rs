@@ -2,6 +2,7 @@
 #![no_main]
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
+#![allow(static_mut_refs)]
 
 use cortex_m::{Peripherals as CorePeripherals, asm};
 use cortex_m_rt::entry;
@@ -49,8 +50,10 @@ const RX_MODE: [u8; 2] = WriteSingle(
         .with_mode(registers::Mode::RxSingle),
 )
 .bytes();
-const W_PAYLOAD_LENGTH: [u8; 2] =
+const W_PAYLOAD_LENGTH_3: [u8; 2] =
     WriteSingle(registers::lora::RegPayloadLength::new().with_payload_length(3)).bytes();
+const W_PAYLOAD_LENGTH_13: [u8; 2] =
+    WriteSingle(registers::lora::RegPayloadLength::new().with_payload_length(13)).bytes();
 const W_PA_CONFIG: [u8; 2] = WriteSingle(
     registers::RegPaConfig::new()
         .with_pa_select(registers::PaSelect::PaBoost)
@@ -80,11 +83,20 @@ const CLEAR_IRQ: [u8; 2] = WriteSingle(
         .with_tx_done(true),
 )
 .bytes();
-static mut W_FIFO: [u8; 4] = WriteFifo([0x63, 0x10, 0xC0]).bytes();
+const TX_BROADCAST: [u8; 4] = WriteFifo([0x63, 0x10, 0xC4]).bytes();
+const TX_GNSS_ACK: [u8; 14] = WriteFifo([
+    0x63, 0x10, 0xCA, 0xA2, 0xF8, 0xFE, 0xC4, 0x5B, 0x36, 0xAA, 0xFA, 0x01, 0x0B,
+])
+.bytes();
+const TX_GNSS_NOACK: [u8; 14] = WriteFifo([
+    0x63, 0x10, 0xC2, 0xA2, 0xF9, 0xFD, 0xC4, 0x5B, 0x36, 0xAA, 0xFA, 0x01, 0x0B,
+])
+.bytes();
 
 static mut STATE: State = State::Start;
 static mut SPI1_RX_BUFFER: [u8; 33] = [0; 33];
 static mut COMMANDS: Queue<&[u8], 64> = Queue::new();
+static mut NEED_ACK: bool = false;
 
 enum State {
     Start,
@@ -135,31 +147,48 @@ fn send_command(command: &[u8], dp: &mut DevicePeripherals) {
 
 #[interrupt]
 fn USART2() {
-    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
+    let commands = unsafe { &mut COMMANDS };
 
     if dp.USART2.isr().read().rxne().bit_is_set() {
         let received_byte = dp.USART2.rdr().read().rdr().bits();
 
         match received_byte {
-            113 => {
-                // q
+            97 => {
+                // a
+                unsafe {
+                    commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_3);
+                    commands.enqueue_unchecked(&TX_BROADCAST);
+                    commands.enqueue_unchecked(&TX_MODE);
+                }
+                unsafe {
+                    NEED_ACK = true;
+                }
                 send_command(&W_FIFO_ADDR_PTR_TX, dp);
             }
-            119 => {
-                // w
-                #[allow(static_mut_refs)]
-                let payload = unsafe { W_FIFO.as_mut() };
-                payload[3] = payload[3].wrapping_add(1);
-                send_command(payload, dp);
+            98 => {
+                // b
+                unsafe {
+                    commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_13);
+                    commands.enqueue_unchecked(&TX_GNSS_ACK);
+                    commands.enqueue_unchecked(&TX_MODE);
+                }
+                unsafe {
+                    NEED_ACK = true;
+                }
+                send_command(&W_FIFO_ADDR_PTR_TX, dp);
             }
-            101 => {
-                // e
-                send_command(&TX_MODE, dp);
-            }
-            114 => {
-                // r
-                send_command(&CLEAR_IRQ, dp);
+            99 => {
+                // c
+                unsafe {
+                    commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_13);
+                    commands.enqueue_unchecked(&TX_GNSS_NOACK);
+                    commands.enqueue_unchecked(&TX_MODE);
+                }
+                unsafe {
+                    NEED_ACK = false;
+                }
+                send_command(&W_FIFO_ADDR_PTR_TX, dp);
             }
             _ => (),
         }
@@ -171,7 +200,6 @@ fn USART2() {
 
 #[interrupt]
 fn DMA1_CH7() {
-    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     if dp.DMA1.isr().read().tcif7().bit_is_set() {
@@ -193,13 +221,9 @@ fn DMA1_CH7() {
 /// SPI1 RX DMA - nRF24L01 command complete
 #[interrupt]
 fn DMA1_CH2() {
-    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
-    #[allow(static_mut_refs)]
     let rx_buf = unsafe { &SPI1_RX_BUFFER };
-    #[allow(static_mut_refs)]
     let commands = unsafe { &mut COMMANDS };
-    #[allow(static_mut_refs)]
     let state = unsafe { &mut STATE };
 
     if dp.DMA1.isr().read().tcif2().bit_is_set() {
@@ -223,16 +247,22 @@ fn DMA1_CH2() {
                     let irq_flags = rx_buf[1];
                     if irq_flags >> 3 & 1 == 1 {
                         // tx done
-                        unsafe { commands.enqueue_unchecked(&DIO0_RXDONE) };
-                        unsafe { commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX) };
-                        unsafe { commands.enqueue_unchecked(&RX_MODE) };
+                        unsafe {
+                            if NEED_ACK {
+                                commands.enqueue_unchecked(&DIO0_RXDONE);
+                                commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX);
+                                commands.enqueue_unchecked(&RX_MODE);
+                            }
+                        }
                         send_command(&CLEAR_IRQ, dp);
                         *state = State::Start;
                     } else if irq_flags >> 6 & 1 == 1 {
                         // rx done
-                        unsafe { commands.enqueue_unchecked(&DIO0_TXDONE) };
-                        unsafe { commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX) };
-                        unsafe { commands.enqueue_unchecked(&R_FIFO) };
+                        unsafe {
+                            commands.enqueue_unchecked(&DIO0_TXDONE);
+                            commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX);
+                            commands.enqueue_unchecked(&R_FIFO);
+                        }
                         send_command(&CLEAR_IRQ, dp);
                         *state = State::Rx;
                     }
@@ -262,7 +292,6 @@ fn DMA1_CH2() {
 /// SPI1 TX DMA - Send nRF24L01 command
 #[interrupt]
 fn DMA1_CH3() {
-    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
     if dp.DMA1.isr().read().tcif3().bit_is_set() {
         // Disable DMA Ch3
@@ -282,9 +311,7 @@ fn DMA1_CH3() {
 
 #[interrupt]
 fn EXTI1() {
-    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
-    #[allow(static_mut_refs)]
     let state = unsafe { &mut STATE };
 
     if dp.EXTI.pr1().read().pr1().bit_is_set() {
@@ -399,7 +426,6 @@ fn main() -> ! {
         .ch7()
         .par()
         .write(|w| unsafe { w.pa().bits(USART2_TDR) });
-    #[allow(static_mut_refs)]
     dp.DMA1
         .ch7()
         .mar()
@@ -410,7 +436,6 @@ fn main() -> ! {
         .ch2()
         .par()
         .write(|w| unsafe { w.pa().bits(SPI1_DR) });
-    #[allow(static_mut_refs)]
     dp.DMA1
         .ch2()
         .mar()
@@ -457,19 +482,16 @@ fn main() -> ! {
     });
 
     // Initialization commands
-    #[allow(static_mut_refs)]
     let commands = unsafe { &mut COMMANDS };
 
     unsafe {
         commands.enqueue_unchecked(&SET_LORA_MODE);
         commands.enqueue_unchecked(&SET_STDBY_MODE);
-        commands.enqueue_unchecked(&W_PAYLOAD_LENGTH);
+        commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_3);
         commands.enqueue_unchecked(&W_PA_CONFIG);
         commands.enqueue_unchecked(&W_SYMB_TIMEOUT_LSB);
         commands.enqueue_unchecked(&W_IRQ_FLAGS_MASK);
         commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_TX);
-        #[allow(static_mut_refs)]
-        commands.enqueue_unchecked(&W_FIFO);
         // commands.enqueue_unchecked(&W_FRF_H);
         // commands.enqueue_unchecked(&W_FRF_M);
         // commands.enqueue_unchecked(&W_FRF_L);
@@ -484,7 +506,6 @@ fn main() -> ! {
         DEVICE_PERIPHERALS = Some(dp);
     }
 
-    #[allow(static_mut_refs)]
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
 
     send_command(&DIO0_TXDONE, dp);
