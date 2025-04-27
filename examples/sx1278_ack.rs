@@ -3,11 +3,11 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
-use cortex_m::{asm, Peripherals as CorePeripherals};
+use cortex_m::{Peripherals as CorePeripherals, asm};
 use cortex_m_rt::entry;
 use heapless::spsc::Queue;
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
-use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals as DevicePeripherals};
+use stm32l4::stm32l4x2::{Interrupt, Peripherals as DevicePeripherals, interrupt};
 use sx127x_commands::{
     commands::{ReadFifo, ReadSingle, WriteFifo, WriteSingle},
     registers,

@@ -37,3 +37,4 @@ monitor arm semihosting enable
 load
 
 continue
+source register_viewer.py

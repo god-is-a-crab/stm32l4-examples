@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-use cortex_m::{asm, Peripherals as CorePeripherals};
+use cortex_m::{Peripherals as CorePeripherals, asm};
 use cortex_m_rt::entry;
 use heapless::spsc::Queue;
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
-use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals as DevicePeripherals};
+use stm32l4::stm32l4x2::{Interrupt, Peripherals as DevicePeripherals, interrupt};
 
 const USART2_TDR: u32 = 0x4000_4428;
 const SPI1_DR: u32 = 0x4001_300C;

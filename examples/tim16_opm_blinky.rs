@@ -4,7 +4,7 @@
 use cortex_m::asm;
 use cortex_m_rt::entry;
 use panic_semihosting as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
-use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals as DevicePeripherals};
+use stm32l4::stm32l4x2::{Interrupt, Peripherals as DevicePeripherals, interrupt};
 
 static mut DEVICE_PERIPHERALS: Option<DevicePeripherals> = None;
 
