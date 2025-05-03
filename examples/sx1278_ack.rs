@@ -52,8 +52,12 @@ const RX_MODE: [u8; 2] = WriteSingle(
 .bytes();
 const W_PAYLOAD_LENGTH_3: [u8; 2] =
     WriteSingle(registers::lora::RegPayloadLength::new().with_payload_length(3)).bytes();
+const W_PAYLOAD_LENGTH_5: [u8; 2] =
+    WriteSingle(registers::lora::RegPayloadLength::new().with_payload_length(5)).bytes();
 const W_PAYLOAD_LENGTH_13: [u8; 2] =
     WriteSingle(registers::lora::RegPayloadLength::new().with_payload_length(13)).bytes();
+const W_PAYLOAD_LENGTH_15: [u8; 2] =
+    WriteSingle(registers::lora::RegPayloadLength::new().with_payload_length(15)).bytes();
 const W_PA_CONFIG: [u8; 2] = WriteSingle(
     registers::RegPaConfig::new()
         .with_pa_select(registers::PaSelect::PaBoost)
@@ -63,8 +67,11 @@ const W_PA_CONFIG: [u8; 2] = WriteSingle(
 // const W_FRF_H: [u8; 2] = [0x06 | 0x80, 0x7B];
 // const W_FRF_M: [u8; 2] = [0x07 | 0x80, 0xC0];
 // const W_FRF_L: [u8; 2] = [0x08 | 0x80, 0x14];
+const W_MODEM_CONFIG2: [u8; 2] =
+    WriteSingle(registers::lora::RegModemConfig2::new().with_spreading_factor(10)).bytes();
+// 6 byte timeout seems to be minimum for 3 byte ACK
 const W_SYMB_TIMEOUT_LSB: [u8; 2] =
-    WriteSingle(registers::lora::RegSymbTimeoutLsb::new().with_symb_timeout(0x16)).bytes();
+    WriteSingle(registers::lora::RegSymbTimeoutLsb::new().with_symb_timeout(0x09)).bytes();
 const R_FIFO: [u8; 4] = ReadFifo::<3>::bytes();
 const W_FIFO_ADDR_PTR_RX: [u8; 2] =
     WriteSingle(registers::lora::RegFifoAddrPtr::new().with_fifo_addr_ptr(0)).bytes();
@@ -85,17 +92,22 @@ const CLEAR_IRQ: [u8; 2] = WriteSingle(
 .bytes();
 const TX_BROADCAST: [u8; 4] = WriteFifo([0x63, 0x10, 0xC4]).bytes();
 const TX_GNSS_ACK: [u8; 14] = WriteFifo([
-    0x63, 0x10, 0xCA, 0xA2, 0xF8, 0xFE, 0xC4, 0x5B, 0x36, 0xAA, 0xFA, 0x01, 0x0B,
+    0x63, 0x10, 0xC9, 0xA2, 0xF8, 0xFE, 0xC4, 0x5B, 0x36, 0xAA, 0xFA, 0x01, 0x0B,
 ])
 .bytes();
 const TX_GNSS_NOACK: [u8; 14] = WriteFifo([
-    0x63, 0x10, 0xC2, 0xA2, 0xF9, 0xFD, 0xC4, 0x5B, 0x36, 0xAA, 0xFA, 0x01, 0x0B,
+    0x63, 0x10, 0xC1, 0xA2, 0xF9, 0xFD, 0xC4, 0x5B, 0x36, 0xAA, 0xFA, 0x01, 0x0B,
 ])
 .bytes();
+const TX_GNSS_BATTERY_NOACK: [u8; 15] = WriteFifo([
+    0x63, 0x10, 0xC3, 0xA2, 0xF8, 0xFE, 0xC4, 0x5B, 0x36, 0xAA, 0xFA, 0x01, 0x0B, 123,
+])
+.bytes();
+const TX_BATTERY_ACK: [u8; 5] = WriteFifo([0x63, 0x10, 0xCE, 123]).bytes();
 
 static mut STATE: State = State::Start;
 static mut SPI1_RX_BUFFER: [u8; 33] = [0; 33];
-static mut COMMANDS: Queue<&[u8], 64> = Queue::new();
+static mut COMMANDS: Queue<&[u8], 32> = Queue::new();
 static mut NEED_ACK: bool = false;
 
 enum State {
@@ -160,8 +172,6 @@ fn USART2() {
                     commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_3);
                     commands.enqueue_unchecked(&TX_BROADCAST);
                     commands.enqueue_unchecked(&TX_MODE);
-                }
-                unsafe {
                     NEED_ACK = true;
                 }
                 send_command(&W_FIFO_ADDR_PTR_TX, dp);
@@ -172,8 +182,6 @@ fn USART2() {
                     commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_13);
                     commands.enqueue_unchecked(&TX_GNSS_ACK);
                     commands.enqueue_unchecked(&TX_MODE);
-                }
-                unsafe {
                     NEED_ACK = true;
                 }
                 send_command(&W_FIFO_ADDR_PTR_TX, dp);
@@ -184,9 +192,27 @@ fn USART2() {
                     commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_13);
                     commands.enqueue_unchecked(&TX_GNSS_NOACK);
                     commands.enqueue_unchecked(&TX_MODE);
-                }
-                unsafe {
                     NEED_ACK = false;
+                }
+                send_command(&W_FIFO_ADDR_PTR_TX, dp);
+            }
+            100 => {
+                // d
+                unsafe {
+                    commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_15);
+                    commands.enqueue_unchecked(&TX_GNSS_BATTERY_NOACK);
+                    commands.enqueue_unchecked(&TX_MODE);
+                    NEED_ACK = false;
+                }
+                send_command(&W_FIFO_ADDR_PTR_TX, dp);
+            }
+            101 => {
+                // e
+                unsafe {
+                    commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_5);
+                    commands.enqueue_unchecked(&TX_BATTERY_ACK);
+                    commands.enqueue_unchecked(&TX_MODE);
+                    NEED_ACK = true;
                 }
                 send_command(&W_FIFO_ADDR_PTR_TX, dp);
             }
@@ -489,6 +515,7 @@ fn main() -> ! {
         commands.enqueue_unchecked(&SET_STDBY_MODE);
         commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_3);
         commands.enqueue_unchecked(&W_PA_CONFIG);
+        commands.enqueue_unchecked(&W_MODEM_CONFIG2);
         commands.enqueue_unchecked(&W_SYMB_TIMEOUT_LSB);
         commands.enqueue_unchecked(&W_IRQ_FLAGS_MASK);
         commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_TX);
