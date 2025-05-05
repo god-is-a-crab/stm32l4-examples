@@ -105,15 +105,17 @@ const TX_GNSS_BATTERY_NOACK: [u8; 15] = WriteFifo([
 .bytes();
 const TX_BATTERY_ACK: [u8; 5] = WriteFifo([0x63, 0x10, 0xCE, 123]).bytes();
 
-static mut STATE: State = State::Start;
+static mut STATE: State = State::WaitingUserInput;
 static mut SPI1_RX_BUFFER: [u8; 33] = [0; 33];
 static mut COMMANDS: Queue<&[u8], 32> = Queue::new();
 static mut NEED_ACK: bool = false;
 
+#[derive(PartialEq, Eq)]
 enum State {
-    Start,
+    WaitingUserInput,
     ReadIrq,
-    Rx,
+    WaitingAck,
+    OutputAck,
 }
 
 #[inline]
@@ -202,7 +204,7 @@ fn USART2() {
                     commands.enqueue_unchecked(&W_PAYLOAD_LENGTH_15);
                     commands.enqueue_unchecked(&TX_GNSS_BATTERY_NOACK);
                     commands.enqueue_unchecked(&TX_MODE);
-                    NEED_ACK = false;
+                    NEED_ACK = true;
                 }
                 send_command(&W_FIFO_ADDR_PTR_TX, dp);
             }
@@ -220,7 +222,7 @@ fn USART2() {
         }
     }
     if dp.USART2.isr().read().ore().bit_is_set() {
-        dp.USART2.icr().write(|w| w.orecf().set_bit());
+        dp.USART2.icr().write(|w| w.orecf().clear_bit_by_one());
     }
 }
 
@@ -278,10 +280,11 @@ fn DMA1_CH2() {
                                 commands.enqueue_unchecked(&DIO0_RXDONE);
                                 commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_RX);
                                 commands.enqueue_unchecked(&RX_MODE);
+                                dp.TIM6.cr1().write(|w| w.opm().set_bit().cen().set_bit());
                             }
                         }
                         send_command(&CLEAR_IRQ, dp);
-                        *state = State::Start;
+                        *state = State::WaitingAck;
                     } else if irq_flags >> 6 & 1 == 1 {
                         // rx done
                         unsafe {
@@ -290,10 +293,10 @@ fn DMA1_CH2() {
                             commands.enqueue_unchecked(&R_FIFO);
                         }
                         send_command(&CLEAR_IRQ, dp);
-                        *state = State::Rx;
+                        *state = State::OutputAck;
                     }
                 }
-                State::Rx => {
+                State::OutputAck => {
                     // Enable USART2 TX DMA
                     dp.DMA1.ch7().cr().write(|w| {
                         w.minc()
@@ -305,7 +308,7 @@ fn DMA1_CH2() {
                             .en()
                             .set_bit()
                     });
-                    *state = State::Start;
+                    *state = State::WaitingUserInput;
                 }
                 _ => {}
             }
@@ -336,6 +339,35 @@ fn DMA1_CH3() {
 }
 
 #[interrupt]
+fn TIM6_DACUNDER() {
+    let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
+
+    if dp.TIM6.sr().read().uif().bit_is_set() {
+        unsafe {
+            if STATE == State::WaitingAck {
+                SPI1_RX_BUFFER[0] = 1;
+                SPI1_RX_BUFFER[1] = 2;
+                SPI1_RX_BUFFER[2] = 3;
+                SPI1_RX_BUFFER[3] = 4;
+                dp.DMA1.ch7().cr().write(|w| {
+                    w.minc()
+                        .set_bit()
+                        .dir()
+                        .set_bit()
+                        .tcie()
+                        .set_bit()
+                        .en()
+                        .set_bit()
+                });
+                send_command(&DIO0_TXDONE, dp);
+                STATE = State::WaitingUserInput;
+            }
+        }
+        dp.TIM6.sr().write(|w| w.uif().clear_bit());
+    }
+}
+
+#[interrupt]
 fn EXTI1() {
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();
     let state = unsafe { &mut STATE };
@@ -354,8 +386,14 @@ fn EXTI1() {
 fn main() -> ! {
     // Device defaults to 4MHz clock
 
-    let cp = CorePeripherals::take().unwrap();
-    let dp = DevicePeripherals::take().unwrap();
+    let (_cp, dp) = unsafe {
+        CORE_PERIPHERALS = Some(CorePeripherals::take().unwrap());
+        DEVICE_PERIPHERALS = Some(DevicePeripherals::take().unwrap());
+        (
+            CORE_PERIPHERALS.as_mut().unwrap(),
+            DEVICE_PERIPHERALS.as_mut().unwrap(),
+        )
+    };
 
     // Set system clock speed to 200 khz
     dp.RCC
@@ -371,6 +409,12 @@ fn main() -> ! {
         .apb1enr1()
         .write(|w| w.usart2en().enabled().tim6en().set_bit());
     dp.RCC.apb2enr().write(|w| w.spi1en().set_bit());
+
+    // TIM6: for ACK timeouts
+    dp.TIM6.psc().write(|w| w.psc().set(1999)); // 200kHz / (1999 + 1) = 100 Hz (10ms per tick)
+    dp.TIM6.arr().write(|w| w.arr().set(22)); // 22 ticks
+    dp.TIM6.egr().write(|w| w.ug().set_bit());
+    dp.TIM6.dier().write(|w| w.uie().set_bit());
 
     // USART2: A2 (TX), A3 (RX) as AF 7
     // SPI1: A4 (NSS), A5 (SCK), A6 (MISO), A7 (MOSI) as AF 5
@@ -473,12 +517,6 @@ fn main() -> ! {
         .par()
         .write(|w| unsafe { w.pa().bits(SPI1_DR) });
 
-    // Set 11us interval
-    dp.TIM6.arr().write(|w| unsafe { w.arr().bits(3) }); // 200khz * 11us approx. 3
-
-    // Enable TIM6 update interrupt
-    dp.TIM6.dier().write(|w| w.uie().set_bit());
-
     // USART2: Configure baud rate 9600
     dp.USART2.brr().write(|w| unsafe { w.bits(21) }); // 200khz / 9600 approx. 21
 
@@ -518,19 +556,19 @@ fn main() -> ! {
         commands.enqueue_unchecked(&W_MODEM_CONFIG2);
         commands.enqueue_unchecked(&W_SYMB_TIMEOUT_LSB);
         commands.enqueue_unchecked(&W_IRQ_FLAGS_MASK);
+        commands.enqueue_unchecked(&CLEAR_IRQ);
         commands.enqueue_unchecked(&W_FIFO_ADDR_PTR_TX);
         // commands.enqueue_unchecked(&W_FRF_H);
         // commands.enqueue_unchecked(&W_FRF_M);
         // commands.enqueue_unchecked(&W_FRF_L);
 
         // Unmask NVIC global interrupts
+        cortex_m::peripheral::NVIC::unmask(Interrupt::TIM6_DACUNDER);
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH2);
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH3);
         cortex_m::peripheral::NVIC::unmask(Interrupt::DMA1_CH7);
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI1);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART2);
-        CORE_PERIPHERALS = Some(cp);
-        DEVICE_PERIPHERALS = Some(dp);
     }
 
     let dp = unsafe { DEVICE_PERIPHERALS.as_mut() }.unwrap();

@@ -30,7 +30,7 @@ fn USART2() {
         dp.ADC1.cr().modify(|_, w| w.adstart().set_bit());
     }
     if dp.USART2.isr().read().ore().bit_is_set() {
-        dp.USART2.icr().write(|w| w.orecf().set_bit());
+        dp.USART2.icr().write(|w| w.orecf().clear_bit_by_one());
     }
 }
 
@@ -92,7 +92,7 @@ fn main() -> ! {
 
     // Enable EOC and clear ADRDY
     dp.ADC1.ier().write(|w| w.eocie().set_bit());
-    dp.ADC1.isr().write(|w| w.adrdy().set_bit());
+    dp.ADC1.isr().write(|w| w.adrdy().clear_bit_by_one());
     dp.ADC1.cr().modify(|_, w| w.aden().set_bit());
     while dp.ADC1.isr().read().adrdy().bit_is_clear() {}
 

@@ -168,7 +168,7 @@ fn USART2() {
         }
     }
     if dp.USART2.isr().read().ore().bit_is_set() {
-        dp.USART2.icr().write(|w| w.orecf().set_bit());
+        dp.USART2.icr().write(|w| w.orecf().clear_bit_by_one());
     }
 }
 
