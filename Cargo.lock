@@ -30,9 +30,9 @@ dependencies = [
 
 [[package]]
 name = "bitfield-struct"
-version = "0.10.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be5a46ba01b60005ae2c51a36a29cfe134bcacae2dd5cedcd4615fbaad1494b"
+checksum = "d3ca019570363e800b05ad4fd890734f28ac7b72f563ad8a35079efb793616f8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -205,6 +205,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
+name = "static-fifo-queue"
+version = "0.1.0"
+
+[[package]]
 name = "stm32l4"
 version = "0.16.0"
 dependencies = [
@@ -224,15 +228,24 @@ dependencies = [
  "heapless",
  "nrf24l01-commands",
  "panic-semihosting",
+ "static-fifo-queue",
  "stm32l4",
+ "sx126x-spi-buffers",
  "sx127x-commands",
+]
+
+[[package]]
+name = "sx126x-spi-buffers"
+version = "0.1.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
 ]
 
 [[package]]
 name = "sx127x-commands"
 version = "0.1.0"
 dependencies = [
- "bitfield-struct 0.10.1",
+ "bitfield-struct 0.11.0",
 ]
 
 [[package]]
